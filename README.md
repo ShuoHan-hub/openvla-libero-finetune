@@ -129,3 +129,245 @@ num_workers = 0
 * Simulation evaluation on LIBERO benchmark
 
 ---
+# LIBERO Evaluation Debug Notes
+
+## 🧠 Overview
+
+This note summarizes key issues and fixes when evaluating a LoRA fine-tuned OpenVLA model on LIBERO.
+
+> Core takeaway:
+> **OpenVLA evaluation requires more than just loading a checkpoint — LoRA, processor, and dataset statistics must all be correctly integrated.**
+
+---
+
+## ⚙️ Setup
+
+* Base model: `openvla-7b`
+* Fine-tuning: LoRA (`peft`)
+* Evaluation: LIBERO benchmark (`libero_spatial`)
+* Environment: MuJoCo + robosuite + GPU cluster
+
+---
+
+## 🚨 Issues & Fixes
+
+### 1. LoRA Not Loaded
+
+**Problem**
+
+Evaluation script only loads base model:
+
+```bash
+--pretrained_checkpoint openvla-7b
+```
+
+➡️ Result: running baseline instead of fine-tuned model.
+
+**Fix**
+
+```python
+from peft import PeftModel
+
+model = PeftModel.from_pretrained(model, lora_path)
+```
+
+---
+
+### 2. LoRA Not Merged for Inference
+
+**Problem**
+
+LoRA adapter loaded but not merged → suboptimal inference.
+
+**Fix**
+
+```python
+model = model.merge_and_unload()
+```
+
+---
+
+### 3. Missing `dataset_statistics.json`
+
+**Error**
+
+```
+Action un-norm key libero_spatial not found
+```
+
+**Reason**
+
+OpenVLA outputs **normalized actions**, requiring dataset statistics to recover real actions.
+
+**Fix**
+
+```python
+import json
+
+with open(stats_path, "r") as f:
+    stats = json.load(f)
+
+model.norm_stats = {
+    cfg.task_suite_name: stats
+}
+```
+
+---
+
+### 4. Incorrect `norm_stats` Format
+
+**Wrong**
+
+```python
+model.norm_stats = stats
+```
+
+**Correct**
+
+```python
+model.norm_stats = {
+    "libero_spatial": stats
+}
+```
+
+➡️ OpenVLA expects a mapping: `task_name → stats`
+
+---
+
+### 5. Merged Checkpoint Breaks Processor
+
+**Error**
+
+```
+Unrecognized processing class
+```
+
+**Reason**
+
+Merged checkpoints may lose HuggingFace processor/tokenizer metadata.
+
+**Fix**
+
+* Always load processor from **base model**
+
+```python
+processor = get_processor(cfg)
+```
+
+* Do NOT rely on merged checkpoint for processor
+
+---
+
+### 6. Eval Runs but No Rollout
+
+**Symptom**
+
+```
+Task suite: libero_spatial
+(no further output)
+```
+
+**Possible Causes**
+
+* Environment initialization stuck (`get_libero_env`)
+* MuJoCo / EGL issues
+* Silent crash or tqdm not refreshing
+
+**Debug Strategy**
+
+```python
+print(">>> before env init")
+env, task_description = get_libero_env(...)
+print(">>> after env init")
+```
+
+---
+
+## 🧩 Final Correct Pipeline
+
+```
+openvla-7b (base)
+        ↓
++ LoRA adapter (PeftModel)
+        ↓
+merge_and_unload()
+        ↓
++ dataset_statistics.json (norm_stats)
+        ↓
++ processor (from base model)
+        ↓
+→ LIBERO rollout
+```
+
+---
+
+## ✅ Minimal Working Example
+
+```python
+# Load base model
+model = get_model(cfg)
+
+# Load LoRA
+model = PeftModel.from_pretrained(model, lora_path)
+model = model.merge_and_unload()
+
+# Load stats
+with open(stats_path, "r") as f:
+    stats = json.load(f)
+
+model.norm_stats = {
+    cfg.task_suite_name: stats
+}
+
+# Load processor
+processor = get_processor(cfg)
+```
+
+---
+
+## 🔍 Key Insights
+
+### 1. OpenVLA is not a standalone model
+
+It depends on:
+
+* processor
+* dataset normalization
+* environment interface
+
+---
+
+### 2. LoRA is only part of the system
+
+```
+Model = Base + LoRA + Stats + Processor
+```
+
+---
+
+### 3. Evaluation = System Test
+
+Not just inference:
+
+```
+model output → action → unnormalize → env.step()
+```
+
+---
+
+## 🚀 Next Steps
+
+* Compare **baseline vs LoRA** success rate
+* Evaluate generalization on:
+
+  * `libero_object`
+  * `libero_goal`
+  * `libero_10 / libero_90`
+* Log results (W&B / CSV)
+
+---
+
+## 🧠 Final Takeaway
+
+> Debugging OpenVLA is not just fixing code —
+> it's aligning **model, data, and environment** into a consistent pipeline.
