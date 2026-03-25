@@ -371,3 +371,112 @@ model output → action → unnormalize → env.step()
 
 > Debugging OpenVLA is not just fixing code —
 > it's aligning **model, data, and environment** into a consistent pipeline.
+## 🧠 OpenVLA Finetune Debug Note (LIBERO)
+
+### ❗ Problem
+
+During finetuning, the model completely ignored language instructions and produced identical trajectories for all tasks.
+
+---
+
+### 🔍 Root Causes
+
+1. **Fake language instructions**
+
+   ```python
+   instruction = Path(path).stem.replace("_", " ")
+   ```
+
+   * Not real task descriptions
+   * Highly repetitive → model learns constant policy
+
+2. **Missing `get_prompt_builder`**
+
+   * Current `prismatic` version does NOT include this API
+   * Caused import errors and inconsistent input formatting
+
+3. **Dataset mismatch**
+
+   ```python
+   instruction = demo["task"]["language_instruction"]
+   ```
+
+   * ❌ LIBERO dataset does NOT contain this field
+   * Leads to `KeyError: 'task'`
+
+4. **Train / Eval misalignment**
+
+   * Train and eval used different input formats
+   * Model learned something unusable at inference
+
+---
+
+### ✅ Final Fix
+
+#### 1. Construct instruction manually (aligned with eval)
+
+```python
+instruction = Path(path).stem.replace("_demo", "").replace("_", " ")
+```
+
+#### 2. Remove prompt builder (critical)
+
+```python
+prompt_builder_fn = None
+```
+
+#### 3. Use correct RLDS format
+
+```python
+rlds_batch = {
+    "dataset_name": "libero_spatial",
+    "observation": {
+        "image_primary": image[None],
+    },
+    "action": action[None],
+    "task": {
+        "language_instruction": instruction,
+    },
+}
+```
+
+#### 4. Verify input (debug)
+
+```python
+print(processor.tokenizer.decode(batch["input_ids"][0]))
+```
+
+---
+
+### ⚖️ Alignment Check
+
+| Component      | Train           | Eval    | Status |
+| -------------- | --------------- | ------- | ------ |
+| Image          | ✔               | ✔       | ✅      |
+| Language       | ✔ (constructed) | ✔ (env) | ✅      |
+| Prompt Builder | ❌               | ❌       | ✅      |
+| Tokenization   | ✔               | ✔       | ✅      |
+
+→ ✅ Fully aligned
+
+---
+
+### 🚨 Key Insight
+
+> If language is broken, OpenVLA degenerates into a **vision-only behavior cloning policy**.
+
+---
+
+### 🚀 Next Steps
+
+* Lower LR: `5e-4 → 1e-4`
+* Validate task-specific behavior (different instructions → different actions)
+* Ensure decoded input actually contains language
+
+---
+
+### 🧩 Takeaway
+
+> OpenVLA = **Vision + Language + Action**
+>
+> If language pipeline fails → model collapses silently.
