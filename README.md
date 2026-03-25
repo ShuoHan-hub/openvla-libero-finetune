@@ -371,11 +371,14 @@ model output → action → unnormalize → env.step()
 
 > Debugging OpenVLA is not just fixing code —
 > it's aligning **model, data, and environment** into a consistent pipeline.
+
 ## 🧠 OpenVLA Finetune Debug Note (LIBERO)
 
 ### ❗ Problem
 
 During finetuning, the model completely ignored language instructions and produced identical trajectories for all tasks.
+
+After successfully training with the initially modified `finetune.py`, I found that the success rate during evaluation was still 0. Upon further inspection, I observed that the robot executed the same trajectory for all tasks. I later identified that the issue was due to a misalignment in the language instruction pipeline between training and evaluation. The following describes the debugging and fixing process.
 
 ---
 
